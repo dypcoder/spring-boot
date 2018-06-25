@@ -17,7 +17,9 @@
 package org.springframework.boot.autoconfigure.ldap.embedded;
 
 import java.io.InputStream;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import javax.annotation.PreDestroy;
@@ -31,15 +33,23 @@ import com.unboundid.ldif.LDIFReader;
 
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionMessage;
+import org.springframework.boot.autoconfigure.condition.ConditionMessage.Builder;
+import org.springframework.boot.autoconfigure.condition.ConditionOutcome;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.SpringBootCondition;
 import org.springframework.boot.autoconfigure.ldap.LdapAutoConfiguration;
 import org.springframework.boot.autoconfigure.ldap.LdapProperties;
 import org.springframework.boot.autoconfigure.ldap.embedded.EmbeddedLdapProperties.Credential;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.ConditionContext;
+import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.core.env.Environment;
@@ -47,9 +57,8 @@ import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.MutablePropertySources;
 import org.springframework.core.env.PropertySource;
 import org.springframework.core.io.Resource;
-import org.springframework.ldap.core.ContextSource;
+import org.springframework.core.type.AnnotatedTypeMetadata;
 import org.springframework.ldap.core.support.LdapContextSource;
-import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 
 /**
@@ -64,6 +73,7 @@ import org.springframework.util.StringUtils;
 @EnableConfigurationProperties({ LdapProperties.class, EmbeddedLdapProperties.class })
 @AutoConfigureBefore(LdapAutoConfiguration.class)
 @ConditionalOnClass(InMemoryDirectoryServer.class)
+@Conditional(EmbeddedLdapAutoConfiguration.EmbeddedLdapCondition.class)
 public class EmbeddedLdapAutoConfiguration {
 
 	private static final String PROPERTY_SOURCE_NAME = "ldap.ports";
@@ -85,13 +95,12 @@ public class EmbeddedLdapAutoConfiguration {
 		this.properties = properties;
 		this.applicationContext = applicationContext;
 		this.environment = environment;
-		Assert.notEmpty(this.embeddedProperties.getBaseDn(), "No baseDn found.");
 	}
 
 	@Bean
 	@DependsOn("directoryServer")
 	@ConditionalOnMissingBean
-	public ContextSource ldapContextSource() {
+	public LdapContextSource ldapContextSource() {
 		LdapContextSource source = new LdapContextSource();
 		if (hasCredentials(this.embeddedProperties.getCredential())) {
 			source.setUserDn(this.embeddedProperties.getCredential().getUsername());
@@ -103,7 +112,7 @@ public class EmbeddedLdapAutoConfiguration {
 
 	@Bean
 	public InMemoryDirectoryServer directoryServer() throws LDAPException {
-		String[] baseDn = this.embeddedProperties.getBaseDn().toArray(new String[0]);
+		String[] baseDn = StringUtils.toStringArray(this.embeddedProperties.getBaseDn());
 		InMemoryDirectoryServerConfig config = new InMemoryDirectoryServerConfig(baseDn);
 		if (hasCredentials(this.embeddedProperties.getCredential())) {
 			config.addAdditionalBindCredentials(
@@ -192,6 +201,30 @@ public class EmbeddedLdapAutoConfiguration {
 		if (this.server != null) {
 			this.server.shutDown(true);
 		}
+	}
+
+	/**
+	 * {@link SpringBootCondition} to determine when to apply embedded LDAP
+	 * auto-configuration.
+	 */
+	static class EmbeddedLdapCondition extends SpringBootCondition {
+
+		private static final Bindable<List<String>> STRING_LIST = Bindable
+				.listOf(String.class);
+
+		@Override
+		public ConditionOutcome getMatchOutcome(ConditionContext context,
+				AnnotatedTypeMetadata metadata) {
+			Builder message = ConditionMessage.forCondition("Embedded LDAP");
+			Environment environment = context.getEnvironment();
+			if (environment != null && !Binder.get(environment)
+					.bind("spring.ldap.embedded.base-dn", STRING_LIST)
+					.orElseGet(Collections::emptyList).isEmpty()) {
+				return ConditionOutcome.match(message.because("Found base-dn property"));
+			}
+			return ConditionOutcome.noMatch(message.because("No base-dn property found"));
+		}
+
 	}
 
 }
